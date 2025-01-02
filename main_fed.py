@@ -18,7 +18,7 @@ from models.test import accuracy
 from sklearn.preprocessing import StandardScaler
 from utils.options import args_parser, print_args
 from utils.dataset import dataset
-from utils.sampling import sample_iid,sample_all, sample_non_iid
+from utils.sampling import sample_iid, sample_all, sample_non_iid
 from models import networks_UNSW
 from models import networks_CICIDS
 from utils.dataset import DatasetSplit
@@ -45,11 +45,11 @@ if __name__ == '__main__':
         dataset_test_t = dataset(root_dir + "test/t/")
 
         if args.iid:
-            train_dict_users = sample_iid(dataset_train, args.num_users)
+            train_dict_users = sample_iid(dataset_train, args.num_dataset_segmentation)
         else:
-            train_dict_users = sample_non_iid(dataset_train, args.num_users)
-        valid_s_dict_users = sample_iid(dataset_valid_s, args.num_users)
-        valid_t_dict_users = sample_iid(dataset_valid_t, args.num_users)
+            train_dict_users = sample_non_iid(dataset_train, args.num_dataset_segmentation)
+        valid_s_dict_users = sample_iid(dataset_valid_s, args.num_dataset_segmentation)
+        valid_t_dict_users = sample_iid(dataset_valid_t, args.num_dataset_segmentation)
         # valid_s_dict_users = sample_all(dataset_valid_s, args.num_users)
         # valid_t_dict_users = sample_all(dataset_valid_t, args.num_users)
 
@@ -64,11 +64,11 @@ if __name__ == '__main__':
         dataset_test_t = dataset(root_dir + "test/t/")
 
         if args.iid:
-            train_dict_users = sample_iid(dataset_train, args.num_users)
+            train_dict_users = sample_iid(dataset_train, args.num_dataset_segmentation)
         else:
-            train_dict_users = sample_non_iid(dataset_train, args.num_users)
-        valid_s_dict_users = sample_iid(dataset_valid_s, args.num_users)
-        valid_t_dict_users = sample_iid(dataset_valid_t, args.num_users)
+            train_dict_users = sample_non_iid(dataset_train, args.num_dataset_segmentation)
+        valid_s_dict_users = sample_iid(dataset_valid_s, args.num_dataset_segmentation)
+        valid_t_dict_users = sample_iid(dataset_valid_t, args.num_dataset_segmentation)
         # valid_s_dict_users = sample_all(dataset_valid_s, args.num_users)
         # valid_t_dict_users = sample_all(dataset_valid_t, args.num_users)
 
@@ -82,6 +82,9 @@ if __name__ == '__main__':
     dataset_valid_t.x = scaler.transform(dataset_valid_t.x)
     dataset_test_s.x = scaler.transform(dataset_test_s.x)
     dataset_test_t.x = scaler.transform(dataset_test_t.x)
+
+    # Gaussian noise
+
 
     # build model
     if args.dataset == 'UNSW':
@@ -104,27 +107,47 @@ if __name__ == '__main__':
         f1_v_t_locals = []
 
         idx_list = []
+        if epoch <= 29:
+            for idx in range(args.num_users):
+                local = LocalUpdate(args, idx, dataset_train, train_dict_users[idx], dataset_valid_s, valid_s_dict_users[idx], dataset_valid_t, valid_t_dict_users[idx])
+                local_weight, local_loss_supcon, local_ce_loss, local_f1_s, local_f1_t = local.train(copy.deepcopy(net).to(args.device))
 
-        for idx in range(args.num_users):
-            local = LocalUpdate(args, idx, dataset_train, train_dict_users[idx], dataset_valid_s, valid_s_dict_users[idx], dataset_valid_t, valid_t_dict_users[idx])
-            local_weight, local_loss_supcon, local_ce_loss, local_f1_s, local_f1_t = local.train(copy.deepcopy(net).to(args.device))
+                is_agg = True
+                for k in local_weight.keys():
+                    if torch.isnan(local_weight[k]).int().sum() > 0 :
+                        is_agg = False
+                if is_agg:
 
-            is_agg = True
-            for k in local_weight.keys():
-                if torch.isnan(local_weight[k]).int().sum() > 0 :
-                    is_agg = False
-            if is_agg:
+                    w_locals.append(local_weight)
 
-                w_locals.append(local_weight)
+                    loss_supcon_locals.append(local_loss_supcon)
+                    loss_ce_locals.append(local_ce_loss)
 
-                loss_supcon_locals.append(local_loss_supcon)
-                loss_ce_locals.append(local_ce_loss)
+                    f1_v_s_locals.append(local_f1_s)
+                    f1_v_t_locals.append(local_f1_t)
 
-                f1_v_s_locals.append(local_f1_s)
-                f1_v_t_locals.append(local_f1_t)
+                    idx_list.append(idx)
+        else:
+            for idx in range(args.num_dataset_segmentation):
+                local = LocalUpdate(args, idx, dataset_train, train_dict_users[idx], dataset_valid_s,
+                                    valid_s_dict_users[idx], dataset_valid_t, valid_t_dict_users[idx])
+                local_weight, local_loss_supcon, local_ce_loss, local_f1_s, local_f1_t = local.train(
+                    copy.deepcopy(net).to(args.device))
 
-                idx_list.append(idx)
-        
+                is_agg = True
+                for k in local_weight.keys():
+                    if torch.isnan(local_weight[k]).int().sum() > 0:
+                        is_agg = False
+                if is_agg:
+                    w_locals.append(local_weight)
+
+                    loss_supcon_locals.append(local_loss_supcon)
+                    loss_ce_locals.append(local_ce_loss)
+
+                    f1_v_s_locals.append(local_f1_s)
+                    f1_v_t_locals.append(local_f1_t)
+
+                    idx_list.append(idx)
         # e_w = FedAvg(w_locals_encoder)
         # c_w = FedAvg(w_locals_classifier)
         w = FedOur(w_locals, net.cpu().state_dict(),f1_v_s_locals, args.epsilon, args.ord, dp=args.dp, alpha=args.alpha)
@@ -135,6 +158,14 @@ if __name__ == '__main__':
         net.load_state_dict(w)
 
         net = net.to(args.device)
+
+        # # begin mongo
+        # torch.save({
+        #     'epoch': epoch + 1,
+        #     'state_dict': net.cpu().state_dict(),
+        #     # 'optimizer': optimizer.state_dict(),
+        # }, os.path.join(args.model_out_dit, 'checkpoint.pth.tar'))
+        # # end mongo
 
         ##TEST
         print("===========================GLOBAL EPOCH: %d==========================="% epoch)
