@@ -6,6 +6,7 @@ Alien is a novel Generalized Federated Anomaly Detection Framework Based on Chal
 
 ```
 pip install -r requirements.txt
+
 python main_fed.py
 ```
 
